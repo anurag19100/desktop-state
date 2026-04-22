@@ -1,0 +1,6 @@
+desktop-state_*.json
+Thumbs.db
+.DS_Store
+desktop.ini
+.vscode/
+*.swp

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>desktop-state — Interactive Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d0d0d;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 30px 16px;
+  }
+
+  h1 {
+    color: #00d4ff;
+    font-size: 1.1rem;
+    letter-spacing: 0.15em;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+  .subtitle {
+    color: #555;
+    font-size: 0.78rem;
+    margin-bottom: 24px;
+    letter-spacing: 0.05em;
+  }
+
+  /* Command buttons */
+  .cmd-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 20px;
+    max-width: 780px;
+    width: 100%;
+  }
+  .cmd-btn {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    color: #aaa;
+    padding: 7px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.82rem;
+    transition: all 0.15s;
+    letter-spacing: 0.03em;
+  }
+  .cmd-btn:hover { border-color: #00d4ff; color: #00d4ff; }
+  .cmd-btn.active { background: #00d4ff18; border-color: #00d4ff; color: #00d4ff; }
+
+  /* Terminal window */
+  .terminal {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 780px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px #000a;
+  }
+  .term-bar {
+    background: #1c1c1c;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #222;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot-r { background: #ff5f57; }
+  .dot-y { background: #febc2e; }
+  .dot-g { background: #28c840; }
+  .term-title {
+    color: #555;
+    font-size: 0.78rem;
+    margin-left: auto;
+    margin-right: auto;
+    letter-spacing: 0.05em;
+  }
+
+  .term-body {
+    padding: 20px 24px;
+    min-height: 420px;
+    font-size: 0.83rem;
+    line-height: 1.65;
+    position: relative;
+  }
+
+  /* Prompt line */
+  .prompt {
+    color: #555;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .prompt-path { color: #00d4ff; }
+  .prompt-arrow { color: #5c5; }
+  .prompt-cmd { color: #fff; }
+
+  /* Output lines */
+  .out { white-space: pre; }
+  .cyan    { color: #00d4ff; }
+  .green   { color: #28c840; }
+  .yellow  { color: #febc2e; }
+  .red     { color: #ff5f57; }
+  .gray    { color: #666; }
+  .white   { color: #e0e0e0; }
+  .dkcyan  { color: #0099bb; }
+  .dkgray  { color: #444; }
+
+  /* Typing animation */
+  .typing-cursor::after {
+    content: '█';
+    animation: blink 1s step-end infinite;
+    color: #00d4ff;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  .line { display: block; animation: fadeIn 0.06s ease forwards; }
+  @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+
+  /* Info strip */
+  .info-strip {
+    max-width: 780px;
+    width: 100%;
+    margin-top: 16px;
+    background: #0f1923;
+    border: 1px solid #1a2a3a;
+    border-radius: 8px;
+    padding: 14px 20px;
+    font-size: 0.78rem;
+    color: #557;
+    line-height: 1.8;
+  }
+  .info-strip span { color: #00d4ff; }
+</style>
+</head>
+<body>
+
+<h1>🖥 desktop-state — Live Demo</h1>
+<p class="subtitle">Click a command to see what it does</p>
+
+<div class="cmd-bar">
+  <button class="cmd-btn active" onclick="show('help')">help</button>
+  <button class="cmd-btn" onclick="show('snapshot')">snapshot</button>
+  <button class="cmd-btn" onclick="show('list')">list</button>
+  <button class="cmd-btn" onclick="show('restore')">restore</button>
+  <button class="cmd-btn" onclick="show('delete')">delete</button>
+</div>
+
+<div class="terminal">
+  <div class="term-bar">
+    <div class="dot dot-r"></div>
+    <div class="dot dot-y"></div>
+    <div class="dot dot-g"></div>
+    <div class="term-title">Windows PowerShell</div>
+  </div>
+  <div class="term-body" id="output"></div>
+</div>
+
+<div class="info-strip" id="info-strip">
+  <span>desktop-state help</span> — shows all available commands and tips.
+</div>
+
+<script>
+const BANNER = `
+<span class="out cyan">  ██████╗ ███████╗███████╗██╗  ██╗████████╗ ██████╗ ██████╗ </span>
+<span class="out cyan">  ██╔══██╗██╔════╝██╔════╝██║ ██╔╝╚══██╔══╝██╔═══██╗██╔══██╗</span>
+<span class="out cyan">  ██║  ██║█████╗  ███████╗█████╔╝    ██║   ██║   ██║██████╔╝</span>
+<span class="out cyan">  ██║  ██║██╔══╝  ╚════██║██╔═██╗    ██║   ██║   ██║██╔═══╝ </span>
+<span class="out cyan">  ██████╔╝███████╗███████║██║  ██╗   ██║   ╚██████╔╝██║     </span>
+<span class="out cyan">  ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     </span>
+<span class="out dkcyan">                     Desktop State Manager</span>
+`;
+
+const screens = {
+  help: {
+    cmd: 'desktop-state help',
+    info: '<span>desktop-state help</span> — shows all commands. Short alias: <span>ds help</span>',
+    lines: [
+      BANNER,
+      `<span class="out cyan">  COMMANDS</span>`,
+      ``,
+      `<span class="out white">  desktop-state snapshot               📸 Save current desktop to JSON</span>`,
+      `<span class="out white">  desktop-state restore                🔄 Restore from latest snapshot</span>`,
+      `<span class="out white">  desktop-state restore --file &lt;path&gt;  🔄 Restore from a specific snapshot</span>`,
+      `<span class="out white">  desktop-state list                   📋 List all saved snapshots</span>`,
+      `<span class="out white">  desktop-state delete                 🗑  Pick and delete a snapshot</span>`,
+      `<span class="out white">  desktop-state delete --file &lt;path&gt;   🗑  Delete a specific snapshot</span>`,
+      `<span class="out white">  desktop-state help                   ❓ Show this help</span>`,
+      ``,
+      `<span class="out cyan">  TIPS</span>`,
+      `<span class="out dkgray">  • Snapshots saved as desktop-state_YYYY-MM-DD_HH-mm-ss.json</span>`,
+      `<span class="out dkgray">  • Run setup-alias.ps1 once to use 'desktop-state' from any terminal</span>`,
+      `<span class="out dkgray">  • Use Hibernate (Start › Power › Hibernate) to freeze state perfectly</span>`,
+      `<span class="out dkgray">  • Short alias: ds snapshot / ds restore / ds list / ds delete</span>`,
+      ``,
+    ]
+  },
+
+  snapshot: {
+    cmd: 'desktop-state snapshot',
+    info: '<span>snapshot</span> — captures all open windows (name, title, exe path, position) and saves to a timestamped JSON file. Also enables Hibernate silently.',
+    lines: [
+      BANNER,
+      `<span class="out cyan">  📸 Capturing desktop state...</span>`,
+      ``,
+      `<span class="out white">  📋 Captured apps:</span>`,
+      `<span class="out gray">     • chrome               Google Docs – Project Plan</span>`,
+      `<span class="out gray">     • Code                 ruflo-v3 — Visual Studio Code</span>`,
+      `<span class="out gray">     • WindowsTerminal       PowerShell  ×  3</span>`,
+      `<span class="out gray">     • Slack                Slack — #general</span>`,
+      `<span class="out gray">     • Notion               Weekly Review – Notion</span>`,
+      `<span class="out gray">     • Spotify              Spotify — Now Playing</span>`,
+      `<span class="out gray">     • explorer             Downloads</span>`,
+      ``,
+      `<span class="out green">  ✅ Snapshot saved  — 7 windows captured</span>`,
+      `<span class="out dkgray">     C:\\Users\\anura\\Documents\\ws\\desktop-state_2026-04-19_14-32-07.json</span>`,
+      ``,
+    ]
+  },
+
+  list: {
+    cmd: 'desktop-state list',
+    info: '<span>list</span> — shows all saved snapshots sorted by newest first, with window count and timestamp.',
+    lines: [
+      BANNER,
+      `<span class="out dkcyan">  #    Snapshot                             Windows    Saved At           </span>`,
+      `<span class="out dkgray">  ────────────────────────────────────────────────────────────────────────</span>`,
+      `<span class="out white">  1    desktop-state_2026-04-19_14-32-07.json  7          2026-04-19 14:32:07 ◀ latest</span>`,
+      `<span class="out white">  2    desktop-state_2026-04-19_09-10-45.json  5          2026-04-19 09:10:45</span>`,
+      `<span class="out white">  3    desktop-state_2026-04-18_22-55-11.json  9          2026-04-18 22:55:11</span>`,
+      `<span class="out white">  4    desktop-state_2026-04-17_08-03-29.json  6          2026-04-17 08:03:29</span>`,
+      ``,
+      `<span class="out dkgray">  Total: 4 snapshot(s)   Folder: C:\\Users\\anura\\Documents\\ws</span>`,
+      ``,
+    ]
+  },
+
+  restore: {
+    cmd: 'desktop-state restore',
+    info: '<span>restore</span> — auto-picks the latest snapshot and relaunches every app. Already-running apps are skipped. System processes (explorer, dwm, etc.) are automatically ignored.',
+    lines: [
+      BANNER,
+      `<span class="out cyan">  🔄 Using latest snapshot: desktop-state_2026-04-19_14-32-07.json</span>`,
+      ``,
+      `<span class="out white">  📂 Snapshot   : 2026-04-19 14:32:07</span>`,
+      `<span class="out white">  🖥  Computer   : ROCKY-PC</span>`,
+      `<span class="out white">  🪟  Windows    : 7</span>`,
+      ``,
+      `<span class="out dkgray">  ⏭  explorer              skipped (system)</span>`,
+      `<span class="out green">  ✔  chrome                already open</span>`,
+      `<span class="out cyan">  🚀 Code                  launched</span>`,
+      `<span class="out cyan">  🚀 WindowsTerminal        launched</span>`,
+      `<span class="out cyan">  🚀 Slack                  launched</span>`,
+      `<span class="out cyan">  🚀 Notion                 launched</span>`,
+      `<span class="out cyan">  🚀 Spotify                launched</span>`,
+      ``,
+      `<span class="out dkgray">  ─────────────────────────────</span>`,
+      `<span class="out green">  ✅ Launched : 5</span>`,
+      `<span class="out dkgray">  ⏭  Skipped  : 2</span>`,
+      ``,
+    ]
+  },
+
+  delete: {
+    cmd: 'desktop-state delete',
+    info: '<span>delete</span> — shows an interactive numbered list of snapshots. You pick one, confirm, and it\'s removed. Nothing is deleted without your explicit "yes".',
+    lines: [
+      BANNER,
+      `<span class="out yellow">  Which snapshot do you want to delete?</span>`,
+      ``,
+      `<span class="out white">  [1]  desktop-state_2026-04-19_14-32-07.json   (7 windows)</span>`,
+      `<span class="out white">  [2]  desktop-state_2026-04-19_09-10-45.json   (5 windows)</span>`,
+      `<span class="out white">  [3]  desktop-state_2026-04-18_22-55-11.json   (9 windows)</span>`,
+      `<span class="out white">  [4]  desktop-state_2026-04-17_08-03-29.json   (6 windows)</span>`,
+      ``,
+      `<span class="out white">  Enter number (or 0 to cancel): </span><span class="out cyan">4</span>`,
+      ``,
+      `<span class="out yellow">  ⚠  About to delete: desktop-state_2026-04-17_08-03-29.json</span>`,
+      `<span class="out white">  Are you sure? (yes / no): </span><span class="out cyan">yes</span>`,
+      ``,
+      `<span class="out green">  🗑  Deleted: desktop-state_2026-04-17_08-03-29.json</span>`,
+      ``,
+    ]
+  }
+};
+
+let currentTimer = null;
+
+function show(key) {
+  // Update button states
+  document.querySelectorAll('.cmd-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+
+  const s = screens[key];
+  document.getElementById('info-strip').innerHTML = s.info;
+
+  const out = document.getElementById('output');
+  out.innerHTML = '';
+
+  // Prompt line
+  const promptEl = document.createElement('div');
+  promptEl.className = 'prompt';
+  promptEl.innerHTML = `
+    <span class="prompt-path">PS C:\\Users\\anura\\Documents\\ws</span>
+    <span class="prompt-arrow">›</span>
+    <span class="prompt-cmd">${s.cmd}</span>
+  `;
+  out.appendChild(promptEl);
+
+  if (currentTimer) clearTimeout(currentTimer);
+
+  let i = 0;
+  function next() {
+    if (i >= s.lines.length) return;
+    const span = document.createElement('span');
+    span.className = 'line';
+    span.innerHTML = s.lines[i] + '\n';
+    out.appendChild(span);
+    i++;
+    currentTimer = setTimeout(next, i === 1 ? 80 : 45);
+  }
+  next();
+}
+
+// Show help on load
+show('help');
+// Fix: re-attach since show() uses event from button click
+document.querySelectorAll('.cmd-btn')[0].classList.add('active');
+</script>
+</body>
+</html>
