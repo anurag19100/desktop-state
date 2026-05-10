@@ -25,11 +25,12 @@ public class WinHelper {
 # ── Virtual Desktop module ────────────────────────────────────────────────────
 $vdAvailable = $false
 try {
-    if (-not (Get-Module -ListAvailable -Name VirtualDesktop)) {
-        Write-Host '  Installing VirtualDesktop module (one-time)...' -ForegroundColor Yellow
-        Install-Module VirtualDesktop -Scope CurrentUser -Force -ErrorAction Stop
+    $installed = Get-Module -ListAvailable -Name VirtualDesktop | Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $installed) {
+        Write-Host '  Installing VirtualDesktop module...' -ForegroundColor Yellow
+        Install-Module VirtualDesktop -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
     }
-    Import-Module VirtualDesktop -ErrorAction Stop
+    Import-Module VirtualDesktop -WarningAction SilentlyContinue -ErrorAction Stop
     $vdAvailable = $true
 } catch {
     # Silent fallback - desktop placement will be skipped
@@ -89,34 +90,6 @@ function Get-VDIndex {
     } catch { return -1 }
 }
 
-# Wait for a process to get a visible window, then return the process
-function Wait-ForWindow {
-    param([string]$ProcessName, [int]$TimeoutSec = 12)
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        $p = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
-             Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } |
-             Select-Object -First 1
-        if ($p) { return $p }
-        Start-Sleep -Milliseconds 500
-    }
-    return $null
-}
-
-# Move a process window to a virtual desktop by index
-function Move-ToDesktop {
-    param($process, [int]$desktopIndex)
-    if (-not $vdAvailable -or $desktopIndex -lt 0) { return }
-    try {
-        $count = Get-DesktopCount
-        # Create extra desktops if needed
-        while ((Get-DesktopCount) -le $desktopIndex) {
-            New-Desktop | Out-Null
-        }
-        $target = Get-Desktop $desktopIndex
-        Move-Window $target $process | Out-Null
-    } catch {}
-}
 
 # ── SNAPSHOT ──────────────────────────────────────────────────────────────────
 function Invoke-Snapshot {
@@ -204,7 +177,7 @@ function Invoke-Restore {
     if ($JsonFile -eq '') {
         $snaps = Get-Snapshots
         if ($snaps.Count -eq 0) {
-            Write-Host '  No snapshots found. Run: desktop-state snapshot' -ForegroundColor Red
+            Write-Host '  No snapshots found. Run: ds snapshot' -ForegroundColor Red
             return
         }
         $JsonFile = $snaps[0].FullName
@@ -219,12 +192,11 @@ function Invoke-Restore {
 
     $data = Get-Content $JsonFile -Encoding UTF8 | ConvertFrom-Json
     Write-Host "  Snapshot   : $($data.SavedAt)" -ForegroundColor White
-    Write-Host "  Computer   : $($data.ComputerName)" -ForegroundColor White
     Write-Host "  Windows    : $($data.WindowCount)" -ForegroundColor White
     if ($vdAvailable) {
-        Write-Host '  VD support : ON - apps will be placed on correct desktops' -ForegroundColor Green
+        Write-Host '  VD support : ON - apps switch to correct desktops' -ForegroundColor Green
     } else {
-        Write-Host '  VD support : OFF - run: Install-Module VirtualDesktop' -ForegroundColor Yellow
+        Write-Host '  VD support : OFF - install VirtualDesktop module' -ForegroundColor Yellow
     }
     Write-Host ''
 
@@ -234,70 +206,83 @@ function Invoke-Restore {
 
     $launched = 0; $skipped = 0; $failed = 0
 
-    foreach ($win in $data.Windows) {
-        $name    = $win.ProcessName
-        $exe     = $win.ExecutablePath
-        $storeId = $win.StoreAppId
-        $vdIdx   = if ($null -ne $win.VirtualDesktop) { [int]$win.VirtualDesktop } else { -1 }
-        $vdLabel = if ($vdIdx -ge 0) { ' -> Desktop ' + ($vdIdx + 1) } else { '' }
-
-        if ($skip -contains $name) {
-            Write-Host "  -- $name  (system, skipped)" -ForegroundColor DarkGray
-            $skipped++; continue
-        }
-
-        $running = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($running) {
-            Write-Host "  OK $name  (already open)" -ForegroundColor Green
-            $skipped++; continue
-        }
-
-        $launched_ok = $false
-
-        # Store / WindowsApps app
-        if ($exe -like '*WindowsApps*' -or ($storeId -and $storeId -ne '')) {
-            if (-not $storeId) {
-                try {
-                    $entry = Get-StartApps | Where-Object { $_.Name -like "*$name*" } | Select-Object -First 1
-                    if ($entry) { $storeId = $entry.AppID }
-                } catch {}
-            }
-            if ($storeId) {
-                try {
-                    Start-Process 'explorer.exe' "shell:AppsFolder\$storeId"
-                    $launched_ok = $true
-                } catch {}
-            }
-        }
-
-        # Normal exe
-        if (-not $launched_ok -and $exe -ne '' -and (Test-Path $exe)) {
-            try { Start-Process -FilePath $exe; $launched_ok = $true } catch {}
-        }
-
-        # Fallback by name
-        if (-not $launched_ok) {
-            try { Start-Process $name; $launched_ok = $true } catch {}
-        }
-
-        if ($launched_ok) {
-            Write-Host "  >> $name  launched$vdLabel" -ForegroundColor Cyan
-            $launched++
-
-            # Move to correct virtual desktop
-            if ($vdAvailable -and $vdIdx -ge 0) {
-                $proc = Wait-ForWindow -ProcessName $name -TimeoutSec 10
-                if ($proc) {
-                    Move-ToDesktop -process $proc -desktopIndex $vdIdx
-                }
-            } else {
-                Start-Sleep -Milliseconds 400
-            }
-        } else {
-            Write-Host "  ?? $name  could not launch - open manually" -ForegroundColor Yellow
-            $failed++
+    # Pre-create all required virtual desktops
+    if ($vdAvailable) {
+        $maxVd = ($data.Windows | Where-Object { $_.VirtualDesktop -ge 0 } |
+                  Measure-Object -Property VirtualDesktop -Maximum).Maximum
+        if ($null -ne $maxVd) {
+            while ((Get-DesktopCount) -le $maxVd) { New-Desktop | Out-Null }
         }
     }
+
+    # Group by virtual desktop index, launch each group on its desktop
+    $groups = $data.Windows | Group-Object -Property VirtualDesktop | Sort-Object { [int]$_.Name }
+
+    foreach ($group in $groups) {
+        $vdIdx = [int]$group.Name
+
+        if ($vdAvailable -and $vdIdx -ge 0) {
+            try {
+                Switch-Desktop (Get-Desktop $vdIdx)
+                Start-Sleep -Milliseconds 300
+            } catch {}
+            Write-Host "  -- Desktop $($vdIdx + 1) --" -ForegroundColor DarkCyan
+        }
+
+        foreach ($win in $group.Group) {
+            $name    = $win.ProcessName
+            $exe     = $win.ExecutablePath
+            $storeId = $win.StoreAppId
+
+            if ($skip -contains $name) {
+                Write-Host "  -- $name  (system, skipped)" -ForegroundColor DarkGray
+                $skipped++; continue
+            }
+
+            $running = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($running) {
+                Write-Host "  OK $name  (already open)" -ForegroundColor Green
+                $skipped++; continue
+            }
+
+            $launched_ok = $false
+
+            # Store / WindowsApps app
+            if ($exe -like '*WindowsApps*' -or ($storeId -and $storeId -ne '')) {
+                if (-not $storeId) {
+                    try {
+                        $entry = Get-StartApps | Where-Object { $_.Name -like "*$name*" } | Select-Object -First 1
+                        if ($entry) { $storeId = $entry.AppID }
+                    } catch {}
+                }
+                if ($storeId) {
+                    try { Start-Process 'explorer.exe' "shell:AppsFolder\$storeId"; $launched_ok = $true } catch {}
+                }
+            }
+
+            # Normal exe
+            if (-not $launched_ok -and $exe -ne '' -and (Test-Path $exe)) {
+                try { Start-Process -FilePath $exe; $launched_ok = $true } catch {}
+            }
+
+            # Fallback by name
+            if (-not $launched_ok) {
+                try { Start-Process $name; $launched_ok = $true } catch {}
+            }
+
+            if ($launched_ok) {
+                Write-Host "  >> $name  launched" -ForegroundColor Cyan
+                $launched++
+                Start-Sleep -Milliseconds 400
+            } else {
+                Write-Host "  ?? $name  could not launch - open manually" -ForegroundColor Yellow
+                $failed++
+            }
+        }
+    }
+
+    # Return to Desktop 1
+    if ($vdAvailable) { try { Switch-Desktop (Get-Desktop 0) } catch {} }
 
     Write-Host ''
     Write-Host '  -------------------------' -ForegroundColor DarkGray
