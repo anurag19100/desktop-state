@@ -1,6 +1,9 @@
 param(
     [Parameter(Position=0)][string]$Command = 'help',
-    [string]$File = ''
+    [string]$File = '',
+    [switch]$Install,
+    [switch]$Uninstall,
+    [switch]$Status
 )
 
 $SnapshotDir = 'C:\Users\anura\Documents\ws'
@@ -366,6 +369,69 @@ function Invoke-Delete {
     Write-Host ''
 }
 
+# ── SHUTDOWN HOOK ─────────────────────────────────────────────────────────────
+$HookTaskName = 'DesktopStateShutdownHook'
+$ScriptPath   = 'C:\Users\anura\Documents\ws\desktop-state\desktop-state.ps1'
+
+function Invoke-Hook {
+    param([switch]$Install, [switch]$Uninstall, [switch]$Status)
+
+    if ($Uninstall) {
+        Unregister-ScheduledTask -TaskName $HookTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host '  Shutdown hook removed.' -ForegroundColor Yellow
+        return
+    }
+
+    if ($Status) {
+        $t = Get-ScheduledTask -TaskName $HookTaskName -ErrorAction SilentlyContinue
+        if ($t) { Write-Host "  Hook: $($t.State)" -ForegroundColor Green }
+        else     { Write-Host '  Hook: Not installed' -ForegroundColor Yellow }
+        return
+    }
+
+    if ($Install) {
+        # Event 1074 = user-initiated shutdown/restart (fires before session teardown)
+        $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <EventTrigger>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='User32'] and EventID=1074]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>$env:USERNAME</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <Hidden>true</Hidden>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$ScriptPath" snapshot</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+        try {
+            Register-ScheduledTask -TaskName $HookTaskName -Xml $xml -Force | Out-Null
+            Write-Host '  Shutdown hook installed. Snapshot auto-saves on shutdown/restart.' -ForegroundColor Green
+        } catch {
+            Write-Host "  Failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        return
+    }
+
+    # No switch — show status
+    Invoke-Hook -Status
+}
+
 # ── HELP ──────────────────────────────────────────────────────────────────────
 function Invoke-Help {
     Write-Host '  COMMANDS' -ForegroundColor Cyan
@@ -376,9 +442,12 @@ function Invoke-Help {
     Write-Host '  desktop-state list                  List all saved snapshots' -ForegroundColor White
     Write-Host '  desktop-state delete                Pick and delete a snapshot' -ForegroundColor White
     Write-Host '  desktop-state delete -File PATH     Delete a specific snapshot' -ForegroundColor White
+    Write-Host '  desktop-state hook -Install         Auto-snapshot on shutdown/restart' -ForegroundColor White
+    Write-Host '  desktop-state hook -Uninstall       Remove shutdown hook' -ForegroundColor White
+    Write-Host '  desktop-state hook -Status          Check hook state' -ForegroundColor White
     Write-Host '  desktop-state help                  Show this help' -ForegroundColor White
     Write-Host ''
-    Write-Host '  SHORT ALIAS: ds snapshot / ds restore / ds list / ds delete' -ForegroundColor DarkGray
+    Write-Host '  SHORT ALIAS: ds snapshot / ds restore / ds list / ds delete / ds hook' -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '  TIPS' -ForegroundColor Cyan
     Write-Host '  - Snapshots saved to: C:\Users\anura\Documents\ws' -ForegroundColor DarkGray
@@ -395,5 +464,6 @@ switch ($Command) {
     'restore'  { Invoke-Restore -JsonFile $File }
     'list'     { Invoke-List }
     'delete'   { Invoke-Delete -JsonFile $File }
+    'hook'     { Invoke-Hook -Install:$Install -Uninstall:$Uninstall -Status:$Status }
     default    { Invoke-Help }
 }
